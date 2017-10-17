@@ -41,6 +41,7 @@ module Plot
         , hintGroup
         , histogram
         , histogramBar
+        , stackedBars
         , customGroups
         , customGroup
           -- AXIS
@@ -103,7 +104,7 @@ Just thought you might want a hand with all the views you need for your data poi
 @docs viewBars
 
 # Simple bars
-@docs groups, group, histogram, histogramBar
+@docs groups, group, histogram, histogramBar, stackedBars
 
 ## Custom bars
 @docs Bars, BarGroup, MaxBarWidth, hintGroup, customGroups, customGroup
@@ -145,6 +146,7 @@ import Json.Decode as Json
 import Round
 import Regex
 import DOM
+import List.Extra exposing (inits)
 
 
 {-| Just an x and a y property.
@@ -429,6 +431,7 @@ type alias Bars data msg =
     , toGroups : data -> List BarGroup
     , styles : List (List (Attribute msg))
     , maxWidth : MaxBarWidth
+    , areBarsStacked : Bool
     }
 
 
@@ -488,6 +491,7 @@ groups toGroups =
     , toGroups = toGroups
     , styles = [ [ fill pinkFill ], [ fill blueFill ] ]
     , maxWidth = Percentage 75
+    , areBarsStacked = False
     }
 
 
@@ -522,6 +526,19 @@ histogram toGroups =
     , toGroups = toGroups
     , styles = [ [ fill pinkFill, stroke pinkStroke ] ]
     , maxWidth = Percentage 100
+    , areBarsStacked = False
+    }
+
+
+{-| For stacked bars! The bars in each group are aligned vertically instead of next to each other.
+-}
+stackedBars : (data -> List BarGroup) -> Bars data msg
+stackedBars toGroups =
+    { axis = normalAxis
+    , toGroups = toGroups
+    , styles = [ [ fill pinkFill ], [ fill blueFill ] ]
+    , maxWidth = Percentage 75
+    , areBarsStacked = True
     }
 
 
@@ -542,6 +559,7 @@ customGroups :
     -> (data -> List BarGroup)
     -> List (List (Attribute msg))
     -> MaxBarWidth
+    -> Bool
     -> Bars data msg
 customGroups =
     Bars
@@ -1053,7 +1071,7 @@ viewSeriesCustom customizations series data =
             List.foldl addNiceReachForSeries summary series
 
         summary =
-            toPlotSummary customizations addNiceReach allDataPoints
+            toPlotSummary customizations addNiceReach allDataPoints False
 
         viewHorizontalAxes =
             allDataPoints
@@ -1181,7 +1199,7 @@ viewBarsCustom customizations bars data =
             List.concat (List.indexedMap toDataPoints groups)
 
         summary =
-            toPlotSummary customizations addNiceReachForBars dataPoints
+            toPlotSummary customizations addNiceReachForBars dataPoints bars.areBarsStacked
 
         xLabels =
             List.indexedMap (\index group -> group.label (toFloat index + 1)) groups
@@ -1353,8 +1371,8 @@ defaultPlotSummary =
     }
 
 
-toPlotSummary : PlotCustomizations msg -> (TempPlotSummary -> TempPlotSummary) -> List { a | x : Float, y : Float } -> PlotSummary
-toPlotSummary customizations toNiceReach points =
+toPlotSummary : PlotCustomizations msg -> (TempPlotSummary -> TempPlotSummary) -> List { a | x : Float, y : Float } -> Bool -> PlotSummary
+toPlotSummary customizations toNiceReach points sumYs=
     let
         foldAxis summary v =
             { min = min summary.min v
@@ -1394,7 +1412,7 @@ toPlotSummary customizations toNiceReach points =
             }
         , y =
             { min = customizations.toDomainLowest (plotSummary.y.min)
-            , max = customizations.toDomainHighest (plotSummary.y.max)
+            , max = customizations.toDomainHighest (if sumYs then (List.sum << List.map .y) points else plotSummary.y.max)
             , dataMin = plotSummary.y.min
             , dataMax = plotSummary.y.max
             , length = toFloat customizations.height
@@ -1591,7 +1609,7 @@ viewTriangle color =
 
 
 viewActualBars : PlotSummary -> Bars data msg -> List BarGroup -> Maybe (Svg msg)
-viewActualBars summary { styles, maxWidth } groups =
+viewActualBars summary { styles, maxWidth, areBarsStacked } groups =
     let
         barsPerGroup =
             toFloat (List.length styles)
@@ -1620,8 +1638,8 @@ viewActualBars summary { styles, maxWidth } groups =
                 ]
                 [ label ]
 
-        viewBar x attributes ( i, { height, label } ) =
-            g [ place summary { x = offset x i, y = max (closestToZero summary.y.min summary.y.max) height } 0 0 ]
+        viewBar x attributes ( i, (baseHeight, { height, label }) ) =
+            g [ place summary { x = x - (width/2), y = max (closestToZero summary.y.min summary.y.max) ( baseHeight + height ) } 0 0 ]
                 [ Svg.map never (Maybe.map viewLabel label |> Maybe.withDefault (text ""))
                 , rect
                     (attributes
@@ -1632,12 +1650,19 @@ viewActualBars summary { styles, maxWidth } groups =
                     []
                 ]
 
-        indexedHeights group =
-            List.indexedMap (,) group.bars
+        indexedHeights bars =
+            List.indexedMap (,) bars
+
+        withBaseHeight group =
+                List.map2 (,) (List.map List.sum (inits <| List.map .height group.bars)) group.bars
+            -- List.foldl (\bar acc -> acc ++ [{bar | baseHeight = 10}]) [] group
 
         viewGroup index group =
             g [ class "elm-plot__bars__group" ]
-                (List.map2 (viewBar (toFloat (index + 1))) styles (indexedHeights group))
+                ( List.map2 (viewBar (toFloat (index + 1)))
+                     styles
+                     (indexedHeights <| withBaseHeight group)
+                )
     in
         Just <| g [ class "elm-plot__bars" ] (List.indexedMap viewGroup groups)
 
